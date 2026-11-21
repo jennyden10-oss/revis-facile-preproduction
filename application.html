@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta name="apps-script-url" content="">
+  <meta name="robots" content="noindex, nofollow">
+  <script src="./application-config.js"></script>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4169e1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+  <title>Révis'Facile</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f2f5ff;
+      text-align: center;
+      padding: 40px 20px;
+    }
+    h1 { color: #4455aa; }
+    .deconnexion {
+      background: transparent;
+      border: 0;
+      color: #4455aa;
+      padding: 10px;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    .formulaire-titre { margin-top: 16px; }
+    .formulaire-titre input, #codeFamilial {
+      box-sizing: border-box;
+      display: block;
+      width: 100%;
+      margin: 8px 0 12px;
+      padding: 10px;
+    }
+    .carte {
+      background: white;
+      border-radius: 16px;
+      padding: 30px;
+      max-width: 450px;
+      margin: 30px auto;
+      box-shadow: 0 3px 12px #ddd;
+    }
+  </style>
+</head>
+<body>
+  <h1>Révis'Facile · Préproduction</h1>
+  <p><a href="./?configuration">Changer le serveur TEST</a></p>
+
+<section class="carte" id="connexion" aria-labelledby="titreConnexion">
+  <h2 id="titreConnexion">Connexion familiale</h2>
+  <form id="formConnexion">
+    <label for="codeFamilial">Code familial</label>
+    <input id="codeFamilial" type="password" autocomplete="off" required>
+    <button id="boutonConnexion" type="submit">Se connecter</button>
+  </form>
+  <p id="messageConnexion" role="status"></p>
+</section>
+
+<main id="espaceRevision" hidden>
+  <button id="boutonDeconnexion" type="button" class="deconnexion">
+    Se déconnecter
+  </button>
+  <p id="messageSession" role="status"></p>
+
+<div class="carte">
+  <h2>📚 Ouvrir un questionnaire</h2>
+  <button type="button" onclick="afficherListeQuiz()">
+    📚 Mes questionnaires
+  </button>
+
+  <div id="listeQuiz" aria-live="polite"></div>
+  <form id="formRenommer" class="formulaire-titre" hidden>
+    <label for="nouveauTitre">Nouveau titre</label>
+    <input id="nouveauTitre" type="text" maxlength="80" required>
+    <button id="enregistrerRenommage" type="submit">Enregistrer</button>
+    <button id="annulerRenommage" type="button">Annuler</button>
+  </form>
+  <p id="messageRenommage" role="status"></p>
+  <form id="formSuppression" class="formulaire-titre" hidden>
+    <p id="confirmationSuppression"></p>
+    <p>Le questionnaire et ses photos liées pourront être restaurés dans la corbeille Drive.</p>
+    <button id="confirmerSuppression" type="submit">Mettre à la corbeille</button>
+    <button id="annulerSuppression" type="button">Annuler</button>
+  </form>
+  <p id="messageSuppression" role="status"></p>
+  <p id="messageQuiz"></p>
+</div>
+
+<div class="carte">
+  <h2>📸 Ajouter un cours</h2>
+  <input
+    type="file"
+    id="photosCours"
+    accept="image/jpeg,image/png,image/webp"
+    multiple
+    style="display:none"
+  >
+
+  <button type="button" id="ajouterFichiers">
+    📷 Ajouter des fichiers
+  </button>
+  <p>Jusqu’à 8 photos JPEG, PNG ou WebP, dans l’ordre des pages.</p>
+  <p id="nombrePhotos">Aucune photo sélectionnée.</p>
+  <button type="button" id="genererQuestionnaire" disabled>Générer le questionnaire</button>
+  <form id="formTitreLot" class="formulaire-titre" hidden>
+    <label for="titreLot">Titre du questionnaire</label>
+    <input id="titreLot" type="text" maxlength="80" required>
+    <button id="validerTitreLot" type="submit">Enregistrer le questionnaire</button>
+  </form>
+  <button type="button" id="nouveauLot" hidden>Commencer un autre cours</button>
+  <p id="progressionLot" role="status"></p>
+</div>
+
+<script>
+const ADRESSE_APPS_SCRIPT = document.querySelector('meta[name="apps-script-url"]').content.trim();
+const CLE_SESSION = "revisFacileSession:" + ADRESSE_APPS_SCRIPT;
+let session = null;
+let ouvertureQuiz = 0;
+let minuterieExpiration;
+
+async function appelerServeur(action, parametres, signal) {
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(ADRESSE_APPS_SCRIPT)) {
+    throw new Error("Adresse Apps Script de test à configurer.");
+  }
+  const reponse = await fetch(ADRESSE_APPS_SCRIPT, {
+    method: "POST",
+    body: JSON.stringify({ action, ...parametres }),
+    redirect: "follow",
+    signal
+  });
+  if (!reponse.ok) throw new Error("Service indisponible.");
+  return reponse.json();
+}
+
+function sessionAuBonFormat(valeur) {
+  return valeur && typeof valeur.jeton === "string" &&
+    /^[A-Za-z0-9_-]{43}$/.test(valeur.jeton) &&
+    Number.isFinite(valeur.expireA) && valeur.expireA > Date.now();
+}
+
+function terminerSession(message = "", effacerStockage = true) {
+  clearTimeout(minuterieExpiration);
+  session = null;
+  try {
+    if (effacerStockage) localStorage.removeItem(CLE_SESSION);
+  } catch {
+    // Le stockage peut être désactivé par le navigateur.
+  }
+  document.getElementById("espaceRevision").hidden = true;
+  document.getElementById("zoneQuiz").hidden = true;
+  for (const id of ["listeQuiz", "reponsesQuiz", "correctionQuiz"]) {
+    document.getElementById(id).replaceChildren();
+  }
+  for (const id of ["titreQuiz", "questionQuiz", "progressionQuiz", "scoreFinalQuiz"]) {
+    document.getElementById(id).textContent = "";
+  }
+  document.getElementById("messageQuiz").textContent = "";
+  document.getElementById("messageSession").textContent = "";
+  reinitialiserPhotos();
+  fermerRenommage();
+  fermerSuppression();
+  window.quizEnCours = null;
+  window.idSessionQuiz = null;
+  document.getElementById("connexion").hidden = false;
+  document.getElementById("messageConnexion").textContent = message;
+}
+
+function surveillerExpiration() {
+  if (!session) return;
+  const restant = session.expireA - Date.now();
+  if (restant <= 0) {
+    terminerSession("Ta session a expiré. Saisis le code familial.");
+    return;
+  }
+  minuterieExpiration = setTimeout(surveillerExpiration, Math.min(restant, 2147483647));
+}
+
+function ouvrirSession(valeur) {
+  session = { jeton: valeur.jeton, expireA: valeur.expireA };
+  document.getElementById("connexion").hidden = true;
+  document.getElementById("espaceRevision").hidden = false;
+  surveillerExpiration();
+  if (!session) return;
+  restaurerLot();
+  return afficherListeQuiz();
+}
+
+async function appelerActionProtegee(action, parametres = {}, signal) {
+  const sessionCourante = session;
+  if (!sessionCourante) return null;
+  const donnees = await appelerServeur(action, { ...parametres, jeton: sessionCourante.jeton }, signal);
+  if (signal?.aborted || session !== sessionCourante) return null;
+  if (donnees.erreur === "SESSION_INVALIDE") {
+    terminerSession("Reconnecte-toi avec le code familial.");
+    return null;
+  }
+  return donnees;
+}
+
+async function afficherListeQuiz() {
+  const zone = document.getElementById("listeQuiz");
+
+  zone.textContent = "Recherche des questionnaires...";
+
+  try {
+    const donnees = await appelerAvecDelai("listerQuiz");
+    if (!donnees) return;
+
+    if (!donnees.succes || !Array.isArray(donnees.questionnaires)) {
+      zone.textContent = "Impossible de récupérer les questionnaires.";
+      return;
+    }
+
+    zone.replaceChildren();
+
+    if (donnees.questionnaires.length === 0) {
+      zone.textContent = "Aucun questionnaire disponible.";
+      return;
+    }
+
+    donnees.questionnaires.forEach(quiz => {
+      const bouton = document.createElement("button");
+
+      bouton.type = "button";
+      bouton.textContent = "📖 " + quiz.titre;
+      bouton.style.display = "block";
+      bouton.style.margin = "10px 0";
+      bouton.style.padding = "12px";
+      bouton.style.width = "100%";
+
+      bouton.onclick = () => ouvrirQuestionnaire(quiz.id);
+
+      const renommer = document.createElement("button");
+      renommer.type = "button";
+      renommer.textContent = "Renommer";
+      renommer.setAttribute("aria-label", "Renommer « " + quiz.titre + " »");
+      renommer.onclick = () => proposerRenommage(quiz);
+
+      const supprimer = document.createElement("button");
+      supprimer.type = "button";
+      supprimer.textContent = "Supprimer";
+      supprimer.setAttribute("aria-label", "Supprimer « " + quiz.titre + " »");
+      supprimer.onclick = () => proposerSuppression(quiz);
+
+      const ligne = document.createElement("div");
+      ligne.dataset.quizId = quiz.id;
+      ligne.appendChild(bouton);
+      ligne.appendChild(renommer);
+      ligne.appendChild(supprimer);
+      zone.appendChild(ligne);
+    });
+
+  } catch (erreur) {
+    console.error(erreur);
+    zone.textContent = "Erreur de connexion.";
+  }
+}
+function convertirPhotoBase64(fichier) {
+  return new Promise((resolve, reject) => {
+    const lecteur = new FileReader();
+
+    lecteur.onload = () => {
+      const resultat = lecteur.result;
+      const contenuBase64 = resultat.split(",")[1];
+      resolve(contenuBase64);
+    };
+
+    lecteur.onerror = () => {
+      reject(new Error("Impossible de lire la photo."));
+    };
+
+    lecteur.readAsDataURL(fichier);
+  });
+}
+async function ouvrirQuestionnaire(id) {
+  const message = document.getElementById("messageQuiz");
+  if (!id || !session) return;
+  const demande = ++ouvertureQuiz;
+  const sessionCourante = session;
+
+  message.textContent = "Chargement en cours...";
+
+  try {
+    const donnees = await appelerAvecDelai("chargerQuiz", { id });
+    if (!donnees || demande !== ouvertureQuiz) return;
+
+    if (donnees.succes && donnees.quiz) {
+      message.textContent = "Questionnaire chargé : " + donnees.quiz.titre;
+      window.quizEnCours = donnees.quiz;
+      window.idSessionQuiz = id;
+      positionQuiz = 0;
+      scoreQuiz = 0;
+      afficherQuestionQuiz();
+    } else {
+      message.textContent = MESSAGES_LOT[donnees.erreur] || "Accès refusé ou questionnaire introuvable.";
+    }
+  } catch (erreur) {
+    if (session === sessionCourante && demande === ouvertureQuiz) {
+      message.textContent = erreur.message;
+    }
+  }
+}
+</script>
+
+<div class="carte" id="zoneQuiz" hidden>
+  <div id="contenuQuiz">
+    <h2 id="titreQuiz"></h2>
+    <p id="progressionQuiz"></p>
+    <h3 id="questionQuiz"></h3>
+
+    <div id="reponsesQuiz"></div>
+    <div id="correctionQuiz" aria-live="polite"></div>
+
+    <button id="boutonQuiz" onclick="actionQuiz()">
+      Vérifier
+    </button>
+  </div>
+
+  <div id="resultatQuiz" aria-live="polite" hidden>
+    <h2>🎉 Entraînement terminé !</h2>
+    <p id="scoreFinalQuiz"></p>
+  </div>
+</div>
+
+<script>
+let positionQuiz = 0;
+let scoreQuiz = 0;
+let choixQuiz = [];
+let reponseValidee = false;
+
+
+function texteNormalise(texte) {
+  return String(texte)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("fr")
+    .replace(/[’']/g, " ")
+    .replace(/[.,;:!?]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+function afficherQuestionQuiz() {
+  const quiz = window.quizEnCours;
+  if (!quiz || !quiz.questions) return;
+
+  const q = quiz.questions[positionQuiz];
+  choixQuiz = [];
+  reponseValidee = false;
+
+  document.getElementById("zoneQuiz").hidden = false;
+  document.getElementById("contenuQuiz").hidden = false;
+  document.getElementById("resultatQuiz").hidden = true;
+  document.getElementById("titreQuiz").textContent = quiz.titre;
+  document.getElementById("progressionQuiz").textContent =
+    "Question " + (positionQuiz + 1) +
+    " sur " + quiz.questions.length;
+  document.getElementById("questionQuiz").textContent = q.question;
+
+  const zone = document.getElementById("reponsesQuiz");
+  zone.replaceChildren();
+  document.getElementById("correctionQuiz").replaceChildren();
+
+  const boutonQuiz = document.getElementById("boutonQuiz");
+  boutonQuiz.disabled = false;
+  boutonQuiz.textContent = "Vérifier";
+
+  if (["qcm", "multiple", "vrai_faux"].includes(q.type)) {
+    q.choix.forEach((choix, i) => {
+      const bouton = document.createElement("button");
+      bouton.textContent = choix;
+      bouton.style.display = "block";
+      bouton.style.margin = "10px 0";
+      bouton.style.padding = "12px";
+      bouton.style.width = "100%";
+
+      bouton.onclick = () => {
+        if (reponseValidee) return;
+
+        if (q.type === "multiple") {
+          choixQuiz = choixQuiz.includes(i)
+            ? choixQuiz.filter(n => n !== i)
+            : [...choixQuiz, i];
+        } else {
+          choixQuiz = [i];
+        }
+
+        zone.querySelectorAll("button").forEach((b, j) => {
+          b.style.background = choixQuiz.includes(j)
+            ? "#dce6ff" : "white";
+        });
+      };
+
+      zone.appendChild(bouton);
+    });
+  } else {
+    const champ = document.createElement("input");
+    champ.type = "text";
+    champ.id = "reponseEcriteQuiz";
+    champ.placeholder = "Ta réponse…";
+    champ.style.width = "100%";
+    champ.style.padding = "12px";
+    zone.appendChild(champ);
+  }
+}
+
+async function verifierAvecGeminiQuiz(reponseEleve) {
+  const donnees = await appelerAvecDelai("verifierReponse", {
+    id: window.idSessionQuiz,
+    index: positionQuiz,
+    reponse: reponseEleve
+  });
+
+  if (!donnees) return null;
+  if (!donnees.succes ||
+      typeof donnees.correcte !== "boolean") {
+    throw new Error("Vérification indisponible. Appuie sur Vérifier pour réessayer.");
+  }
+
+  return donnees.correcte;
+}
+
+async function actionQuiz() {
+  const quiz = window.quizEnCours;
+  const q = quiz.questions[positionQuiz];
+
+  if (reponseValidee) {
+    positionQuiz++;
+
+    if (positionQuiz >= quiz.questions.length) {
+      document.getElementById("scoreFinalQuiz").textContent =
+        scoreQuiz + " / " + quiz.questions.length;
+      document.getElementById("contenuQuiz").hidden = true;
+      document.getElementById("resultatQuiz").hidden = false;
+    } else {
+      afficherQuestionQuiz();
+    }
+    return;
+  }
+
+  let juste = false;
+  let attendu = "";
+
+  if (["qcm", "multiple", "vrai_faux"].includes(q.type)) {
+    if (!choixQuiz.length) return;
+
+    juste = choixQuiz.length === q.correctes.length &&
+      q.correctes.every(n => choixQuiz.includes(n));
+
+    attendu = q.correctes.map(n => q.choix[n]).join(", ");
+  } else {
+    const champ = document.getElementById("reponseEcriteQuiz");
+    if (!champ.value.trim()) return;
+
+    
+juste = q.reponsesAcceptees.some(
+  r => texteNormalise(r) === texteNormalise(champ.value)
+);
+
+attendu = q.reponsesAcceptees[0];
+
+if (!juste) {
+  const bouton = document.getElementById("boutonQuiz");
+  const ancienTexte = bouton.textContent;
+
+  bouton.disabled = true;
+  bouton.textContent = "Vérification en cours…";
+
+  try {
+    juste = await verifierAvecGeminiQuiz(champ.value);
+    if (juste === null || window.quizEnCours !== quiz) return;
+  } catch (erreur) {
+    if (window.quizEnCours === quiz) {
+      document.getElementById("correctionQuiz").textContent =
+        erreur.message + " Ta réponse n’est pas comptée comme fausse.";
+    }
+    return;
+  } finally {
+    if (window.quizEnCours === quiz) {
+      bouton.disabled = false;
+      bouton.textContent = ancienTexte;
+    }
+  }
+}
+
+champ.disabled = true;
+
+  }
+
+  reponseValidee = true;
+  if (juste) scoreQuiz++;
+
+  const correction = document.getElementById("correctionQuiz");
+  correction.replaceChildren();
+  const titre = document.createElement("p");
+  titre.textContent = juste
+    ? "✓ Bonne réponse !" : "✗ Pas tout à fait.";
+  correction.appendChild(titre);
+
+  if (!juste) {
+    const p = document.createElement("p");
+    p.textContent = "Bonne réponse : " + attendu;
+    correction.appendChild(p);
+  }
+
+  const explication = document.createElement("p");
+  explication.textContent = q.explication;
+  correction.appendChild(explication);
+
+  document.getElementById("boutonQuiz").textContent =
+    positionQuiz + 1 === quiz.questions.length
+      ? "Voir mon résultat" : "Continuer";
+}
+</script>
+
+</main>
+
+<script>
+const MAX_PHOTOS_LOT = 8;
+const MAX_OCTETS_PHOTO = 1536 * 1024;
+const LIMITE_ORIGINAL = 30 * 1024 * 1024;
+const champPhotos = document.getElementById("photosCours");
+const boutonFichiers = document.getElementById("ajouterFichiers");
+const boutonGeneration = document.getElementById("genererQuestionnaire");
+const boutonNouveauLot = document.getElementById("nouveauLot");
+const nombrePhotos = document.getElementById("nombrePhotos");
+const progressionLot = document.getElementById("progressionLot");
+let lotEnCours = null;
+let traitementLot = false;
+const formTitreLot = document.getElementById("formTitreLot");
+const champTitreLot = document.getElementById("titreLot");
+const boutonValiderTitre = document.getElementById("validerTitreLot");
+
+function cleLotNavigateur() {
+  return CLE_SESSION + ":lot";
+}
+
+function enregistrerLotLocal(lot, idTermine) {
+  try {
+    if (lot) localStorage.setItem(cleLotNavigateur(), JSON.stringify(lot));
+    else {
+      const stocke = JSON.parse(localStorage.getItem(cleLotNavigateur()));
+      if (stocke?.id === idTermine) localStorage.removeItem(cleLotNavigateur());
+    }
+  } catch {
+    // Un navigateur qui interdit le stockage conserve le lot dans cet onglet.
+  }
+}
+
+function actualiserCommandesLot() {
+  const nombre = champPhotos.files.length;
+  const titreAValider = typeof lotEnCours?.titre === "string";
+  boutonFichiers.disabled = traitementLot || titreAValider;
+  boutonGeneration.hidden = titreAValider;
+  boutonGeneration.disabled = traitementLot || (!nombre && !lotEnCours);
+  formTitreLot.hidden = !titreAValider;
+  champTitreLot.disabled = traitementLot;
+  boutonValiderTitre.disabled = traitementLot;
+  boutonGeneration.textContent = lotEnCours && !traitementLot
+    ? "Réessayer" : "Générer le questionnaire";
+  boutonNouveauLot.hidden = !lotEnCours;
+  boutonNouveauLot.disabled = traitementLot;
+  nombrePhotos.textContent = nombre
+    ? nombre + (nombre === 1 ? " photo sélectionnée." : " photos sélectionnées.")
+    : "Aucune photo sélectionnée.";
+}
+
+function reinitialiserPhotos() {
+  lotEnCours = null;
+  champPhotos.value = "";
+  progressionLot.textContent = "";
+  actualiserCommandesLot();
+}
+
+function restaurerLot() {
+  try {
+    const memorise = JSON.parse(localStorage.getItem(cleLotNavigateur()));
+    if (memorise && memorise.expireA === session.expireA &&
+        typeof memorise.id === "string" && Array.isArray(memorise.empreintes) &&
+        memorise.empreintes.length >= 1 && memorise.empreintes.length <= MAX_PHOTOS_LOT) {
+      lotEnCours = memorise;
+      if (typeof memorise.titre === "string") {
+        champTitreLot.value = memorise.titre;
+        progressionLot.textContent = "Vérifie le titre, puis enregistre le questionnaire.";
+      } else {
+        progressionLot.textContent = "Un cours est en attente. Appuie sur Réessayer pour le reprendre.";
+      }
+    }
+  } catch {
+    // Le stockage n'est pas toujours disponible.
+  }
+  actualiserCommandesLot();
+}
+
+async function empreintePhoto(fichier) {
+  const octets = new Uint8Array(await crypto.subtle.digest("SHA-256", await fichier.arrayBuffer()));
+  return Array.from(octets, octet => octet.toString(16).padStart(2, "0")).join("");
+}
+
+async function preparerImage(fichier) {
+  const url = URL.createObjectURL(fichier);
+  const image = new Image();
+  const canvas = document.createElement("canvas");
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("Impossible de lire « " + fichier.name + " »."));
+      image.src = url;
+    });
+    if (!image.naturalWidth || !image.naturalHeight) {
+      throw new Error("Impossible de lire « " + fichier.name + " ».");
+    }
+    for (const [dimension, qualite] of [[2400, 0.86], [2000, 0.8], [1600, 0.75], [1200, 0.7]]) {
+      const echelle = Math.min(1, dimension / Math.max(image.naturalWidth, image.naturalHeight));
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * echelle));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * echelle));
+      const dessin = canvas.getContext("2d");
+      dessin.fillStyle = "white";
+      dessin.fillRect(0, 0, canvas.width, canvas.height);
+      dessin.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const jpeg = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", qualite));
+      if (jpeg && jpeg.size <= MAX_OCTETS_PHOTO) return jpeg;
+    }
+    throw new Error("Impossible de réduire « " + fichier.name + " ». Essaie une autre photo.");
+  } finally {
+    URL.revokeObjectURL(url);
+    canvas.width = canvas.height = 0;
+  }
+}
+
+const MESSAGES_LOT = {
+  NOMBRE_PHOTOS: "Choisis entre 1 et 8 photos.",
+  LOT_INVALIDE: "Ce cours ne peut plus être repris. Commence un autre cours.",
+  LOT_INCOMPLET: "Il manque des photos. Sélectionne à nouveau les mêmes fichiers dans le même ordre.",
+  PHOTO_INVALIDE: "Une photo n’a pas pu être lue. Choisis une image JPEG, PNG ou WebP.",
+  PHOTO_TROP_GRANDE: "Une photo est encore trop volumineuse après réduction.",
+  PHOTOS_DIFFERENTES: "Les photos ne correspondent pas à ce cours. Sélectionne les mêmes fichiers dans le même ordre.",
+  GENERATION_EN_COURS: "La génération est peut-être encore en cours. Attends quelques minutes avant de réessayer.",
+  GEMINI_NON_CONFIGURE: "La génération n’est pas encore configurée.",
+  GEMINI_INDISPONIBLE: "Gemini n’a pas pu créer le questionnaire. Réessaie dans un instant.",
+  DRIVE_NON_CONFIGURE: "Les dossiers de l’application ne sont pas configurés.",
+  ARCHIVAGE_INTERROMPU: "L’archivage a été interrompu. Appuie à nouveau sur Enregistrer le questionnaire.",
+  TITRE_INVALIDE: "Saisis un titre de 1 à 80 caractères.",
+  BROUILLON_INTROUVABLE: "Le questionnaire à enregistrer est introuvable.",
+  QUESTIONNAIRE_INTROUVABLE: "Ce questionnaire est introuvable. Actualise Mes questionnaires.",
+  ARCHIVE_INTROUVABLE: "Le dossier d’archives lié à ce questionnaire est introuvable.",
+  TITRE_MODIFIE: "Le titre a changé. Actualise Mes questionnaires avant de le renommer.",
+  RENOMMAGE_INTERROMPU: "Le renommage a été interrompu. Réessaie.",
+  QUESTIONNAIRE_AMBIGU: "Plusieurs fichiers correspondent à ce questionnaire. Vérifie-les dans Drive.",
+  SUPPRESSION_INTERROMPUE: "Drive n’a pas terminé la mise à la corbeille. Le questionnaire reste disponible. Réessaie.",
+  SUPPRESSION_A_REPRENDRE: "La mise à la corbeille est incomplète. Réessaie la suppression du même questionnaire pour la terminer."
+};
+
+async function appelerAvecDelai(action, parametres) {
+  const commande = action === "validerTitre" ? "Enregistrer le questionnaire"
+    : action === "renommerQuiz" ? "Enregistrer"
+    : action === "supprimerQuiz" ? "Mettre à la corbeille" : "Réessayer";
+  const consigne = action === "chargerQuiz"
+    ? " Vérifie ta connexion, puis appuie de nouveau sur le questionnaire."
+    : action === "verifierReponse"
+      ? " Vérifie ta connexion, puis appuie de nouveau sur Vérifier."
+      : " Vérifie ta connexion, puis appuie sur " + commande + ".";
+  const messageHorsLigne = "Connexion Internet interrompue." + consigne;
+  if (navigator.onLine === false) throw new Error(messageHorsLigne);
+
+  const controleur = new AbortController();
+  let minuterie;
+  let horsLigne;
+  const interruption = new Promise((_, rejeter) => {
+    horsLigne = () => rejeter(new Error(messageHorsLigne));
+    window.addEventListener("offline", horsLigne);
+    const generation = action === "genererQuiz";
+    minuterie = setTimeout(() => {
+      rejeter(new Error(generation
+        ? "La réponse tarde. Le questionnaire est peut-être encore en cours. Appuie sur Réessayer pour vérifier."
+        : "Le serveur met trop de temps à répondre." + consigne));
+    }, generation ? 120000 : 30000);
+  });
+
+  try {
+    const requete = appelerActionProtegee(action, parametres, controleur.signal)
+      .catch(() => {
+        throw new Error("Impossible de joindre le serveur." + consigne);
+      });
+    // Le canal du kit ne peut pas annuler un appel Apps Script déjà transmis.
+    return await Promise.race([interruption, requete]);
+  } finally {
+    clearTimeout(minuterie);
+    window.removeEventListener("offline", horsLigne);
+    controleur.abort();
+  }
+}
+
+async function appelerLot(action, parametres) {
+  const reponse = await appelerAvecDelai(action, parametres);
+  if (reponse && !reponse.succes) {
+    throw new Error(MESSAGES_LOT[reponse.erreur] || "L’opération a été interrompue. Réessaie.");
+  }
+  return reponse;
+}
+
+async function genererDepuisPhotos() {
+  if (traitementLot || !session || typeof lotEnCours?.titre === "string") return;
+  const sessionEnvoi = session;
+  const fichiers = Array.from(champPhotos.files);
+  if (!fichiers.length && !lotEnCours) return;
+  traitementLot = true;
+  actualiserCommandesLot();
+
+  try {
+    if (fichiers.length > MAX_PHOTOS_LOT) throw new Error(MESSAGES_LOT.NOMBRE_PHOTOS);
+    if (fichiers.some(fichier => !["image/jpeg", "image/png", "image/webp"].includes(fichier.type))) {
+      throw new Error(MESSAGES_LOT.PHOTO_INVALIDE);
+    }
+    if (fichiers.some(fichier => !fichier.size || fichier.size > LIMITE_ORIGINAL)) {
+      throw new Error("Chaque fichier d’origine doit faire au maximum 30 Mo.");
+    }
+    if (!lotEnCours || fichiers.length) {
+      progressionLot.textContent = "Préparation des photos…";
+      const empreintes = [];
+      for (const fichier of fichiers) {
+        empreintes.push(await empreintePhoto(fichier));
+        if (session !== sessionEnvoi) return;
+      }
+      if (!lotEnCours) {
+        lotEnCours = { id: crypto.randomUUID(), empreintes, expireA: sessionEnvoi.expireA };
+        enregistrerLotLocal(lotEnCours);
+      } else if (JSON.stringify(empreintes) !== JSON.stringify(lotEnCours.empreintes)) {
+        throw new Error(MESSAGES_LOT.PHOTOS_DIFFERENTES);
+      }
+    }
+
+    const { id: lotId, empreintes } = lotEnCours;
+    const nombre = empreintes.length;
+    const lot = await appelerLot("preparerLot", { lotId, nombre });
+    if (!lot) return;
+    const recues = new Set(lot.recues);
+    if (recues.size < nombre && !fichiers.length) throw new Error(MESSAGES_LOT.LOT_INCOMPLET);
+    for (let indexPhoto = 0; indexPhoto < nombre; indexPhoto++) {
+      if (recues.has(indexPhoto)) continue;
+      progressionLot.textContent = "Envoi de la photo " + (indexPhoto + 1) + " sur " + nombre + "…";
+      const jpeg = await preparerImage(fichiers[indexPhoto]);
+      const contenuBase64 = await convertirPhotoBase64(jpeg);
+      if (session !== sessionEnvoi) return;
+      if (!await appelerLot("ajouterPhoto", { lotId, indexPhoto, contenuBase64 })) return;
+    }
+
+    progressionLot.textContent = "Création du questionnaire…";
+    const resultat = await appelerLot("genererQuiz", { lotId });
+    if (!resultat) return;
+    if (resultat.quiz.aValider) {
+      lotEnCours.titre = resultat.quiz.titre;
+      champTitreLot.value = resultat.quiz.titre;
+      enregistrerLotLocal(lotEnCours);
+      progressionLot.textContent = "Vérifie le titre, puis enregistre le questionnaire.";
+    } else {
+      await terminerEnregistrementLot(lotId, resultat.quiz.titre);
+    }
+  } catch (erreur) {
+    if (session === sessionEnvoi) {
+      progressionLot.textContent = erreur.message;
+    }
+  } finally {
+    traitementLot = false;
+    actualiserCommandesLot();
+  }
+}
+
+async function terminerEnregistrementLot(lotId, titre) {
+  enregistrerLotLocal(null, lotId);
+  reinitialiserPhotos();
+  progressionLot.textContent = "Questionnaire créé : " + titre;
+  await afficherListeQuiz();
+}
+
+champTitreLot.addEventListener("input", () => {
+  if (!lotEnCours) return;
+  lotEnCours.titre = champTitreLot.value;
+  enregistrerLotLocal(lotEnCours);
+});
+
+formTitreLot.addEventListener("submit", async evenement => {
+  evenement.preventDefault();
+  if (traitementLot || !session || !lotEnCours) return;
+  const sessionCourante = session;
+  const lotId = lotEnCours.id;
+  const titre = champTitreLot.value.trim();
+  if (!titre) {
+    progressionLot.textContent = MESSAGES_LOT.TITRE_INVALIDE;
+    return;
+  }
+  lotEnCours.titre = titre;
+  enregistrerLotLocal(lotEnCours);
+  traitementLot = true;
+  actualiserCommandesLot();
+  progressionLot.textContent = "Enregistrement et archivage des photos…";
+  try {
+    const resultat = await appelerLot("validerTitre", { lotId, titre });
+    if (resultat) await terminerEnregistrementLot(lotId, resultat.quiz.titre);
+  } catch (erreur) {
+    if (session === sessionCourante) progressionLot.textContent = erreur.message;
+  } finally {
+    traitementLot = false;
+    actualiserCommandesLot();
+  }
+});
+
+const formRenommer = document.getElementById("formRenommer");
+const nouveauTitre = document.getElementById("nouveauTitre");
+const enregistrerRenommage = document.getElementById("enregistrerRenommage");
+const annulerRenommage = document.getElementById("annulerRenommage");
+const messageRenommage = document.getElementById("messageRenommage");
+let quizARenommer;
+
+function fermerRenommage() {
+  quizARenommer = null;
+  formRenommer.hidden = true;
+  nouveauTitre.value = "";
+  messageRenommage.textContent = "";
+}
+
+function proposerRenommage(quiz) {
+  if (enregistrerRenommage.disabled || confirmerSuppression.disabled) return;
+  fermerSuppression();
+  quizARenommer = quiz;
+  nouveauTitre.value = quiz.titre;
+  messageRenommage.textContent = "";
+  formRenommer.hidden = false;
+  nouveauTitre.focus();
+}
+
+annulerRenommage.addEventListener("click", fermerRenommage);
+formRenommer.addEventListener("submit", async evenement => {
+  evenement.preventDefault();
+  if (!quizARenommer || enregistrerRenommage.disabled) return;
+  const sessionCourante = session;
+  const titre = nouveauTitre.value.trim();
+  if (!titre) {
+    messageRenommage.textContent = MESSAGES_LOT.TITRE_INVALIDE;
+    return;
+  }
+  enregistrerRenommage.disabled = annulerRenommage.disabled = nouveauTitre.disabled = true;
+  messageRenommage.textContent = "Enregistrement du nouveau titre…";
+  try {
+    const resultat = await appelerLot("renommerQuiz", {
+      id: quizARenommer.id, titreActuel: quizARenommer.titre, titre
+    });
+    if (!resultat) return;
+    fermerRenommage();
+    messageRenommage.textContent = resultat.quiz.archiveRenommee
+      ? "Questionnaire et dossier d’archives renommés."
+      : "Questionnaire renommé. Aucun dossier d’archives lié.";
+    if (window.quizEnCours?.id === resultat.quiz.id) {
+      window.quizEnCours.titre = resultat.quiz.titre;
+      document.getElementById("titreQuiz").textContent = resultat.quiz.titre;
+      document.getElementById("messageQuiz").textContent = "Questionnaire chargé : " + resultat.quiz.titre;
+    }
+    await afficherListeQuiz();
+  } catch (erreur) {
+    if (session === sessionCourante) messageRenommage.textContent = erreur.message;
+  } finally {
+    enregistrerRenommage.disabled = annulerRenommage.disabled = nouveauTitre.disabled = false;
+  }
+});
+
+const formSuppression = document.getElementById("formSuppression");
+const confirmationSuppression = document.getElementById("confirmationSuppression");
+const confirmerSuppression = document.getElementById("confirmerSuppression");
+const annulerSuppression = document.getElementById("annulerSuppression");
+const messageSuppression = document.getElementById("messageSuppression");
+let quizASupprimer;
+
+function fermerSuppression() {
+  quizASupprimer = null;
+  formSuppression.hidden = true;
+  confirmationSuppression.textContent = "";
+  messageSuppression.textContent = "";
+}
+
+function proposerSuppression(quiz) {
+  if (confirmerSuppression.disabled || enregistrerRenommage.disabled) return;
+  fermerRenommage();
+  quizASupprimer = quiz;
+  confirmationSuppression.textContent = "Mettre « " + quiz.titre + " » à la corbeille ?";
+  messageSuppression.textContent = "";
+  formSuppression.hidden = false;
+  annulerSuppression.focus();
+}
+
+annulerSuppression.addEventListener("click", fermerSuppression);
+formSuppression.addEventListener("submit", async evenement => {
+  evenement.preventDefault();
+  if (!session || !quizASupprimer || confirmerSuppression.disabled) return;
+  const sessionCourante = session;
+  const { id, titre } = quizASupprimer;
+  confirmerSuppression.disabled = annulerSuppression.disabled = true;
+  messageSuppression.textContent = "Mise à la corbeille…";
+  try {
+    const resultat = await appelerLot("supprimerQuiz", { id, titre });
+    if (!resultat) return;
+    fermerSuppression();
+    messageSuppression.textContent = resultat.archiveSupprimee
+      ? "Questionnaire et photos placés dans la corbeille Drive."
+      : resultat.dejaSupprime ? "Le questionnaire ne figure plus dans la liste."
+        : "Questionnaire placé dans la corbeille Drive. Aucun dossier d’archives lié.";
+    const liste = document.getElementById("listeQuiz");
+    for (const ligne of Array.from(liste.children)) {
+      if (ligne.dataset.quizId === id) ligne.remove();
+    }
+    if (!liste.children.length) liste.textContent = "Aucun questionnaire disponible.";
+    if (window.idSessionQuiz === id) {
+      window.quizEnCours = null;
+      window.idSessionQuiz = null;
+      document.getElementById("zoneQuiz").hidden = true;
+      document.getElementById("messageQuiz").textContent = "";
+    }
+  } catch (erreur) {
+    if (session === sessionCourante) messageSuppression.textContent = erreur.message;
+  } finally {
+    confirmerSuppression.disabled = annulerSuppression.disabled = false;
+  }
+});
+
+boutonFichiers.addEventListener("click", () => champPhotos.click());
+champPhotos.addEventListener("change", actualiserCommandesLot);
+boutonGeneration.addEventListener("click", genererDepuisPhotos);
+boutonNouveauLot.addEventListener("click", () => {
+  enregistrerLotLocal(null, lotEnCours?.id);
+  reinitialiserPhotos();
+});
+</script>
+
+<script>
+const champCode = document.getElementById("codeFamilial");
+const boutonConnexion = document.getElementById("boutonConnexion");
+const boutonDeconnexion = document.getElementById("boutonDeconnexion");
+const messageConnexion = document.getElementById("messageConnexion");
+
+document.getElementById("formConnexion").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (boutonConnexion.disabled || !champCode.value) return;
+  boutonConnexion.disabled = true;
+  messageConnexion.textContent = "Connexion en cours…";
+  try {
+    const codeAcces = champCode.value;
+    champCode.value = "";
+    const donnees = await appelerServeur("connexion", { codeAcces });
+    if (!donnees.succes || !sessionAuBonFormat(donnees)) {
+      messageConnexion.textContent = {
+        CODE_INCORRECT: "Code familial incorrect.",
+        TROP_DE_TENTATIVES: "Trop de tentatives. Réessaie dans 15 minutes."
+      }[donnees.erreur] || "Connexion indisponible.";
+      return;
+    }
+    try {
+      localStorage.setItem(CLE_SESSION, JSON.stringify({
+        jeton: donnees.jeton,
+        expireA: donnees.expireA
+      }));
+    } catch {
+      document.getElementById("messageSession").textContent =
+        "Ce navigateur ne peut pas mémoriser la connexion.";
+    }
+    await ouvrirSession(donnees);
+  } catch (erreur) {
+    messageConnexion.textContent = erreur.message === "Adresse Apps Script de test à configurer."
+      ? erreur.message : "Connexion indisponible. Réessaie.";
+  } finally {
+    boutonConnexion.disabled = false;
+  }
+});
+
+boutonDeconnexion.addEventListener("click", async () => {
+  if (!session || boutonDeconnexion.disabled) return;
+  const sessionCourante = session;
+  boutonDeconnexion.disabled = true;
+  const message = document.getElementById("messageSession");
+  message.textContent = "Déconnexion en cours…";
+  try {
+    const donnees = await appelerServeur("deconnexion", { jeton: sessionCourante.jeton });
+    if (!donnees.succes) throw new Error("Révocation indisponible.");
+    if (session === sessionCourante) terminerSession("Tu es déconnectée.");
+  } catch {
+    if (session === sessionCourante) {
+      message.textContent = "Déconnexion non confirmée. Réessaie.";
+    }
+  } finally {
+    boutonDeconnexion.disabled = false;
+  }
+});
+
+window.addEventListener("storage", event => {
+  if ((event.key === CLE_SESSION || event.key === null) && session &&
+      event.newValue !== JSON.stringify(session)) {
+    terminerSession("La session a changé dans un autre onglet.", false);
+  }
+});
+
+try {
+  const memorisee = JSON.parse(localStorage.getItem(CLE_SESSION));
+  if (sessionAuBonFormat(memorisee)) {
+    ouvrirSession(memorisee);
+  } else if (memorisee) {
+    terminerSession("Ta session a expiré. Saisis le code familial.");
+  }
+} catch {
+  terminerSession();
+}
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("./sw.js")
+        .then(function () {
+          console.log("Service worker activé");
+        })
+        .catch(function (erreur) {
+          console.error("Erreur service worker :", erreur);
+        });
+    });
+  }
+</script>
+
+</body>
+</html>

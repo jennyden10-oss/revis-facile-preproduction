@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Révis’Facile — Préproduction</title>
+  <style>
+    body { font: 1rem/1.5 system-ui, sans-serif; background: #f2f5ff; color: #222; margin: 0; padding: 1rem; }
+    main { max-width: 30rem; margin: 2rem auto; padding: 1.25rem; background: #fff; border-radius: 1rem; }
+    h1 { font-size: 1.5rem; margin-top: 0; color: #33468e; }
+    label, input { display: block; }
+    input, button { box-sizing: border-box; font: inherit; min-height: 2.75rem; padding: .5rem; }
+    input { margin: .5rem 0 1rem; width: 100%; }
+    button { cursor: pointer; }
+    #etatConfiguration { min-height: 1.5em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Révis’Facile — Préproduction</h1>
+    <form id="configuration">
+      <label for="serveur">URL /exec de Révis’Facile – TEST</label>
+      <input id="serveur" type="url" placeholder="https://script.google.com/macros/s/…/exec"
+        required inputmode="url" autocapitalize="none" autocomplete="off" spellcheck="false">
+      <button id="continuer" type="submit">Ouvrir la préproduction</button>
+    </form>
+    <p id="etatConfiguration" role="status"></p>
+  </main>
+  <script src="./configuration.js"></script>
+</body>
+</html>
